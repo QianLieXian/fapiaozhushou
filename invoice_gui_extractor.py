@@ -147,15 +147,29 @@ def split_name_model_unit(item_name: str, model: str, unit: str) -> Dict[str, st
     if not item_name:
         return {"item_name": item_name, "model": model, "unit": unit}
 
-    unit_pattern = r"(?:台|套|条|件|个|把|双|米|m|M|cm|CM|只|支|瓶|箱|辆|架|根|张|块|组|副|顶|盏|卷)"
+    def looks_like_unit_token(token: str) -> bool:
+        token = (token or "").strip()
+        if not token:
+            return False
+        if re.search(r"\d", token):
+            return False
+        if re.search(r"[*/_=+~`!@#$%^&?,;:'\"\\|]", token):
+            return False
+
+        # 常见单位通常较短（如 件/箱/kg/mm），避免误把较长中文词当单位
+        if re.fullmatch(r"[A-Za-z]{1,4}", token):
+            return True
+        if re.fullmatch(r"[\u4e00-\u9fff]{1,3}", token):
+            return True
+        return False
 
     if not unit:
-        m_unit = re.search(rf"({unit_pattern})$", item_name)
+        m_unit = re.search(r"(?P<unit>[A-Za-z]{1,4}|[\u4e00-\u9fff]{1,3})$", item_name)
         if m_unit:
-            unit_candidate = m_unit.group(1)
-            prefix = item_name[: -len(unit_candidate)].strip()
-            # 避免把正常中文品名末字误拆成单位（如“手套”）
-            if prefix and re.search(r"[A-Za-z0-9.\-*/()]$", prefix):
+            unit_candidate = m_unit.group("unit")
+            prefix = item_name[: m_unit.start()].strip()
+            # 仅在单位前存在明显“型号/编码”特征时才切分，避免把品名末尾中文误拆成单位
+            if prefix and looks_like_unit_token(unit_candidate) and re.search(r"[A-Za-z0-9.\-*/()]$", prefix):
                 unit = unit_candidate
                 item_name = prefix
 
@@ -170,10 +184,7 @@ def split_name_model_unit(item_name: str, model: str, unit: str) -> Dict[str, st
 
     # 兜底：型号被并到产品名中时，优先识别尾部“型号+单位”
     if item_name and not model:
-        packed = re.search(
-            rf"(?P<name>.+?)(?P<model>[A-Za-z0-9][A-Za-z0-9.\-*/()（）]{2,})(?P<unit>{unit_pattern})?$",
-            item_name,
-        )
+        packed = re.search(r"(?P<name>.+?)(?P<model>[A-Za-z0-9][A-Za-z0-9.\-*/()（）]{2,})(?P<unit>[A-Za-z]{1,4}|[\u4e00-\u9fff]{1,3})?$", item_name)
         if packed:
             name_candidate = packed.group("name").strip()
             model_candidate = packed.group("model").strip(".-*/")
@@ -181,7 +192,7 @@ def split_name_model_unit(item_name: str, model: str, unit: str) -> Dict[str, st
             if name_candidate and model_candidate and re.search(r"[A-Za-z]", model_candidate):
                 item_name = name_candidate
                 model = model_candidate
-                if unit_candidate and not unit:
+                if unit_candidate and not unit and looks_like_unit_token(unit_candidate):
                     unit = unit_candidate
 
     item_name = re.sub(r"\s+", " ", item_name).strip()
@@ -432,6 +443,26 @@ def extract_items(text: str) -> List[Dict[str, str]]:
     items = []
 
     def parse_item_line(line: str) -> Optional[Dict[str, str]]:
+        def looks_like_unit_token(token: str) -> bool:
+            token = (token or "").strip()
+            if not token:
+                return False
+            if re.search(r"\d", token):
+                return False
+            if re.search(r"[*/_=+~`!@#$%^&?,;:'\"\\|]", token):
+                return False
+            if re.fullmatch(r"[A-Za-z]{1,4}", token):
+                return True
+            if re.fullmatch(r"[\u4e00-\u9fff]{1,3}", token):
+                return True
+            return False
+
+        def looks_like_model_token(token: str) -> bool:
+            token = (token or "").strip()
+            if len(token) < 2:
+                return False
+            return bool(re.search(r"[A-Za-z0-9]", token))
+
         line = re.sub(r"\s+", " ", line).strip()
         if not line:
             return None
@@ -459,14 +490,20 @@ def extract_items(text: str) -> List[Dict[str, str]]:
         item_name = prefix
         if len(chunks) >= 2:
             possible_unit = chunks[-1]
-            possible_model = chunks[-2] if len(chunks) >= 2 else ""
-            if re.fullmatch(r"(?:台|套|条|件|个|把|双|米|m|M|cm|CM|只|支|瓶|箱|辆|架|根|张|块|组|副|顶|盏|卷)", possible_unit):
+            possible_model = chunks[-2]
+            if looks_like_unit_token(possible_unit):
                 unit = possible_unit
-                if re.search(r"[A-Za-z0-9]", possible_model):
+                if looks_like_model_token(possible_model):
                     model = possible_model
                     item_name = " ".join(chunks[:-2]).strip()
                 else:
                     item_name = " ".join(chunks[:-1]).strip()
+            elif looks_like_model_token(possible_unit):
+                model = possible_unit
+                item_name = " ".join(chunks[:-1]).strip()
+
+        if not item_name:
+            item_name = prefix
 
         return {
             "item_name": item_name,
