@@ -366,6 +366,27 @@ def extract_items_from_tables(pdf_path: str) -> List[Dict[str, str]]:
 
                 pending_item: Optional[Dict[str, str]] = None
 
+                def merge_text_row(target: Dict[str, str], text_row: Dict[str, str]):
+                    text_name = (text_row.get("item_name") or "").strip()
+                    text_model = (text_row.get("model") or "").strip()
+                    text_unit = (text_row.get("unit") or "").strip()
+
+                    if text_name:
+                        # 折行延续：若是纯中文描述，优先补到品名；含英文/数字更可能是规格型号。
+                        if re.search(r"[A-Za-z0-9]", text_name):
+                            if target.get("model"):
+                                target["model"] = (target["model"] + " " + text_name).strip()
+                            else:
+                                target["model"] = text_name
+                        else:
+                            target["item_name"] = (target.get("item_name", "") + text_name).strip()
+
+                    if text_model:
+                        target["model"] = (target.get("model", "") + " " + text_model).strip()
+
+                    if text_unit and not target.get("unit"):
+                        target["unit"] = text_unit
+
                 for row in rows[header_idx + 1 :]:
                     if not any(row):
                         continue
@@ -411,12 +432,15 @@ def extract_items_from_tables(pdf_path: str) -> List[Dict[str, str]]:
                             pending_item = None
                             continue
 
+                        if has_numbers:
+                            merged = dict(current)
+                            merge_text_row(merged, pending_item)
+                            items.append(merged)
+                            pending_item = None
+                            continue
+
                         if has_text and not has_numbers:
-                            if item_name:
-                                pending_item["item_name"] = (pending_item["item_name"] + item_name).strip()
-                            for key in ["model", "unit"]:
-                                if current[key] and not pending_item[key]:
-                                    pending_item[key] = current[key]
+                            merge_text_row(pending_item, current)
                             continue
 
                         if any(pending_item[k] for k in ["item_name", "amount", "tax_amount"]):
@@ -427,7 +451,11 @@ def extract_items_from_tables(pdf_path: str) -> List[Dict[str, str]]:
                         continue
 
                     if has_text and not has_numbers:
-                        pending_item = current
+                        # 常见场景：上一行已包含数量金额，本行仅是折行规格型号；应回填上一条，避免拆成新行。
+                        if items and any(items[-1].get(k) for k in ["quantity", "unit_price", "amount", "tax_rate", "tax_amount"]):
+                            merge_text_row(items[-1], current)
+                        else:
+                            pending_item = current
                         continue
 
                     items.append(current)
