@@ -279,6 +279,8 @@ def extract_items_from_tables(pdf_path: str) -> List[Dict[str, str]]:
                 if header_idx < 0:
                     continue
 
+                pending_item: Optional[Dict[str, str]] = None
+
                 for row in rows[header_idx + 1 :]:
                     if not any(row):
                         continue
@@ -294,22 +296,59 @@ def extract_items_from_tables(pdf_path: str) -> List[Dict[str, str]]:
                     item_name = pick("item_name").lstrip("*")
                     amount = clean_money(pick("amount"))
                     tax_amount = clean_money(pick("tax_amount"))
+                    quantity = pick("quantity")
+                    unit_price = clean_money(pick("unit_price"))
+                    tax_rate = pick("tax_rate")
+                    model = pick("model")
+                    unit = pick("unit")
 
-                    if not item_name and not amount and not tax_amount:
+                    has_text = bool(item_name or model or unit)
+                    has_numbers = bool(quantity or unit_price or amount or tax_rate or tax_amount)
+
+                    current = {
+                        "item_name": item_name,
+                        "model": model,
+                        "unit": unit,
+                        "quantity": quantity,
+                        "unit_price": unit_price,
+                        "amount": amount,
+                        "tax_rate": tax_rate,
+                        "tax_amount": tax_amount,
+                    }
+
+                    if pending_item is not None:
+                        if has_numbers and not item_name:
+                            for key in ["quantity", "unit_price", "amount", "tax_rate", "tax_amount"]:
+                                if current[key]:
+                                    pending_item[key] = current[key]
+                            if any(pending_item[k] for k in ["item_name", "amount", "tax_amount"]):
+                                items.append(pending_item)
+                            pending_item = None
+                            continue
+
+                        if has_text and not has_numbers:
+                            if item_name:
+                                pending_item["item_name"] = (pending_item["item_name"] + item_name).strip()
+                            for key in ["model", "unit"]:
+                                if current[key] and not pending_item[key]:
+                                    pending_item[key] = current[key]
+                            continue
+
+                        if any(pending_item[k] for k in ["item_name", "amount", "tax_amount"]):
+                            items.append(pending_item)
+                        pending_item = None
+
+                    if not has_text and not has_numbers:
                         continue
 
-                    items.append(
-                        {
-                            "item_name": item_name,
-                            "model": pick("model"),
-                            "unit": pick("unit"),
-                            "quantity": pick("quantity"),
-                            "unit_price": clean_money(pick("unit_price")),
-                            "amount": amount,
-                            "tax_rate": pick("tax_rate"),
-                            "tax_amount": tax_amount,
-                        }
-                    )
+                    if has_text and not has_numbers:
+                        pending_item = current
+                        continue
+
+                    items.append(current)
+
+                if pending_item is not None and any(pending_item[k] for k in ["item_name", "amount", "tax_amount"]):
+                    items.append(pending_item)
 
     return items
 
@@ -317,6 +356,36 @@ def extract_items_from_tables(pdf_path: str) -> List[Dict[str, str]]:
 def extract_items(text: str) -> List[Dict[str, str]]:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     items = []
+
+    # 先用跨行正则提取，兼容“项目名称换行 + 数字在下一行”的情况
+    block = first_match(r"(?:项目名称|产品名称).*?(?=价税合计|合计|备注|$)", text, flags=re.S)
+    if block:
+        multiline_pattern = re.compile(
+            r"(\*[\s\S]*?)\s+"
+            r"([0-9]+(?:\.[0-9]+)?)\s+"
+            r"([0-9]+(?:\.[0-9]+)?)\s+"
+            r"([0-9]+(?:\.[0-9]+)?)\s+"
+            r"([0-9]+(?:\.[0-9]+)?%?)\s+"
+            r"([0-9]+(?:\.[0-9]+)?)"
+        )
+
+        for m in multiline_pattern.finditer(block):
+            raw_name = re.sub(r"\s+", "", m.group(1)).lstrip("*")
+            items.append(
+                {
+                    "item_name": raw_name,
+                    "model": "",
+                    "unit": "",
+                    "quantity": m.group(2),
+                    "unit_price": m.group(3),
+                    "amount": m.group(4),
+                    "tax_rate": m.group(5),
+                    "tax_amount": m.group(6),
+                }
+            )
+
+    if items:
+        return items
 
     for line in lines:
         if "*" not in line:
