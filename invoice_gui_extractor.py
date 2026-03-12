@@ -29,22 +29,18 @@ except ImportError:
 
 
 EXPORT_COLUMNS = [
-    "来源文件",
-    "发票号码",
+    "空",
+    "公司名称(销售方)",
+    "纳税人识别号(购买方税号)",
+    "发票编码(发票号码)",
     "开票日期",
-    "购买方名称",
-    "购买方税号",
-    "销售方名称",
-    "销售方税号",
-    "项目名称",
-    "规格型号",
-    "单位",
+    "空2",
+    "产品名称",
+    "型号(规格型号)",
     "数量",
-    "单价",
     "金额",
-    "税率/征收率",
     "税额",
-    "合计",
+    "总价",
 ]
 
 
@@ -69,22 +65,18 @@ class InvoiceRow:
 
     def to_export_dict(self) -> Dict[str, str]:
         return {
-            "来源文件": self.source_file,
-            "发票号码": self.invoice_number,
+            "空": "",
+            "公司名称(销售方)": self.seller_name,
+            "纳税人识别号(购买方税号)": self.buyer_tax_no,
+            "发票编码(发票号码)": self.invoice_number,
             "开票日期": self.invoice_date,
-            "购买方名称": self.buyer_name,
-            "购买方税号": self.buyer_tax_no,
-            "销售方名称": self.seller_name,
-            "销售方税号": self.seller_tax_no,
-            "项目名称": self.item_name,
-            "规格型号": self.model,
-            "单位": self.unit,
+            "空2": "",
+            "产品名称": self.item_name,
+            "型号(规格型号)": self.model,
             "数量": self.quantity,
-            "单价": self.unit_price,
             "金额": self.amount,
-            "税率/征收率": self.tax_rate,
             "税额": self.tax_amount,
-            "合计": self.total,
+            "总价": self.total,
         }
 
 
@@ -218,7 +210,7 @@ def extract_header_fields(text: str) -> Dict[str, str]:
     return fields
 
 
-def open_output_folder(path: str):
+def open_output_path(path: str):
     try:
         if os.name == "nt":
             os.startfile(path)
@@ -236,6 +228,92 @@ def open_output_folder(path: str):
         pass
 
 
+def _clean_cell(value: Optional[str]) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def extract_items_from_tables(pdf_path: str) -> List[Dict[str, str]]:
+    if pdfplumber is None:
+        return []
+
+    items: List[Dict[str, str]] = []
+
+    header_alias = {
+        "item_name": ["项目名称", "货物或应税劳务、服务名称", "服务名称", "产品名称"],
+        "model": ["规格型号", "型号"],
+        "unit": ["单位"],
+        "quantity": ["数量"],
+        "unit_price": ["单价"],
+        "amount": ["金额", "不含税金额"],
+        "tax_rate": ["税率", "征收率", "税率/征收率"],
+        "tax_amount": ["税额"],
+    }
+
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            tables = page.extract_tables() or []
+            for table in tables:
+                if not table:
+                    continue
+
+                rows = [[_clean_cell(cell) for cell in (row or [])] for row in table]
+                header_idx = -1
+                col_map: Dict[str, int] = {}
+
+                for idx, row in enumerate(rows):
+                    joined = " ".join(row)
+                    if "项目名称" not in joined and "产品名称" not in joined:
+                        continue
+                    tmp_map: Dict[str, int] = {}
+                    for col_idx, col_name in enumerate(row):
+                        for key, aliases in header_alias.items():
+                            if any(alias in col_name for alias in aliases):
+                                tmp_map[key] = col_idx
+                    if "item_name" in tmp_map and ("amount" in tmp_map or "tax_amount" in tmp_map):
+                        header_idx = idx
+                        col_map = tmp_map
+                        break
+
+                if header_idx < 0:
+                    continue
+
+                for row in rows[header_idx + 1 :]:
+                    if not any(row):
+                        continue
+
+                    joined = "".join(row)
+                    if any(stop in joined for stop in ["价税合计", "合计", "备注", "销售方信息", "购买方信息"]):
+                        continue
+
+                    def pick(key: str) -> str:
+                        idx = col_map.get(key, -1)
+                        return row[idx] if 0 <= idx < len(row) else ""
+
+                    item_name = pick("item_name").lstrip("*")
+                    amount = clean_money(pick("amount"))
+                    tax_amount = clean_money(pick("tax_amount"))
+
+                    if not item_name and not amount and not tax_amount:
+                        continue
+
+                    items.append(
+                        {
+                            "item_name": item_name,
+                            "model": pick("model"),
+                            "unit": pick("unit"),
+                            "quantity": pick("quantity"),
+                            "unit_price": clean_money(pick("unit_price")),
+                            "amount": amount,
+                            "tax_rate": pick("tax_rate"),
+                            "tax_amount": tax_amount,
+                        }
+                    )
+
+    return items
+
+
 def extract_items(text: str) -> List[Dict[str, str]]:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     items = []
@@ -247,33 +325,49 @@ def extract_items(text: str) -> List[Dict[str, str]]:
             continue
 
         line_norm = re.sub(r"\s+", " ", line)
-        # 典型行: *公共安全设备套三号灭火工具 1.5*28条 把 80 13.861... 1108.91 1% 11.09
         pattern = (
-            r"^(\*[^\s]+(?:\s+[^\s]+)*)\s+"  # 项目名称
-            r"([^\s]+)\s+"                    # 规格型号
-            r"([^\s]+)\s+"                    # 单位
-            r"([0-9.]+)\s+"                    # 数量
-            r"([0-9.]+)\s+"                    # 单价
-            r"([0-9.]+)\s+"                    # 金额
-            r"([0-9.]+%?)\s+"                  # 税率
-            r"([0-9.]+)$"                       # 税额
+            r"^(\*[^\s]+(?:\s+[^\s]+)*)\s+"
+            r"([^\s]*)\s+"
+            r"([^\s]*)\s+"
+            r"([0-9.]+)\s+"
+            r"([0-9.]+)\s+"
+            r"([0-9.]+)\s+"
+            r"([0-9.]+%?)\s+"
+            r"([0-9.]+)$"
         )
         m = re.match(pattern, line_norm)
-        if not m:
+        if m:
+            items.append(
+                {
+                    "item_name": m.group(1).lstrip("*"),
+                    "model": m.group(2),
+                    "unit": m.group(3),
+                    "quantity": m.group(4),
+                    "unit_price": m.group(5),
+                    "amount": m.group(6),
+                    "tax_rate": m.group(7),
+                    "tax_amount": m.group(8),
+                }
+            )
             continue
 
-        items.append(
-            {
-                "item_name": m.group(1).lstrip("*"),
-                "model": m.group(2),
-                "unit": m.group(3),
-                "quantity": m.group(4),
-                "unit_price": m.group(5),
-                "amount": m.group(6),
-                "tax_rate": m.group(7),
-                "tax_amount": m.group(8),
-            }
+        fallback = re.match(
+            r"^(\*[^\s]+(?:\s+[^\s]+)*)\s+.*?([0-9]+(?:\.[0-9]+)?)\s+([0-9]+(?:\.[0-9]+)?)$",
+            line_norm,
         )
+        if fallback:
+            items.append(
+                {
+                    "item_name": fallback.group(1).lstrip("*"),
+                    "model": "",
+                    "unit": "",
+                    "quantity": "",
+                    "unit_price": "",
+                    "amount": fallback.group(2),
+                    "tax_rate": "",
+                    "tax_amount": fallback.group(3),
+                }
+            )
 
     return items
 
@@ -281,7 +375,9 @@ def extract_items(text: str) -> List[Dict[str, str]]:
 def parse_invoice(pdf_path: str) -> List[InvoiceRow]:
     text = extract_text_from_pdf(pdf_path)
     header = extract_header_fields(text)
-    items = extract_items(text)
+    items = extract_items_from_tables(pdf_path)
+    if not items:
+        items = extract_items(text)
 
     if not items:
         items = [{
@@ -532,7 +628,10 @@ class InvoiceApp:
 
             self.status_var.set("处理完成")
             messagebox.showinfo("完成", f"导出完成，共处理 {total} 个PDF。")
-            open_output_folder(out_dir)
+            if self.mode_var.get() == "merge":
+                open_output_path(out_path)
+            elif total == 1 and self.mode_var.get() == "split":
+                open_output_path(os.path.join(out_dir, f"{os.path.splitext(os.path.basename(self.pdf_files[0]))[0]}_整理.{self.format_var.get()}"))
         except Exception as e:
             self.status_var.set("处理失败")
             messagebox.showerror("错误", f"处理过程中出现问题:\n{e}")
