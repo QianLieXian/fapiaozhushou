@@ -136,9 +136,7 @@ def clean_money(value: str) -> str:
 def split_name_model_unit(item_name: str, model: str, unit: str) -> Dict[str, str]:
     """Split merged item text into item/model/unit when possible.
 
-    Handles compact content such as:
-    - 交通运输设备*游艇拖车RIB550QR台
-    - 公共安全设备*消防水带8-65-30条
+    仅在“紧凑无空格串行文本”中尝试推断，避免把正常产品描述误拆。
     """
     item_name = (item_name or "").strip()
     model = (model or "").strip()
@@ -146,6 +144,9 @@ def split_name_model_unit(item_name: str, model: str, unit: str) -> Dict[str, st
 
     if not item_name:
         return {"item_name": item_name, "model": model, "unit": unit}
+
+    compact_item = re.sub(r"\s+", "", item_name)
+    has_spacing = bool(re.search(r"\s", item_name))
 
     def looks_like_unit_token(token: str) -> bool:
         token = (token or "").strip()
@@ -155,45 +156,45 @@ def split_name_model_unit(item_name: str, model: str, unit: str) -> Dict[str, st
             return False
         if re.search(r"[*/_=+~`!@#$%^&?,;:'\"\\|]", token):
             return False
-
-        # 常见单位通常较短（如 件/箱/kg/mm），避免误把较长中文词当单位
         if re.fullmatch(r"[A-Za-z]{1,4}", token):
             return True
         if re.fullmatch(r"[\u4e00-\u9fff]{1,3}", token):
             return True
         return False
 
-    if not unit:
-        m_unit = re.search(r"(?P<unit>[A-Za-z]{1,4}|[\u4e00-\u9fff]{1,3})$", item_name)
-        if m_unit:
-            unit_candidate = m_unit.group("unit")
-            prefix = item_name[: m_unit.start()].strip()
-            # 仅在单位前存在明显“型号/编码”特征时才切分，避免把品名末尾中文误拆成单位
-            if prefix and looks_like_unit_token(unit_candidate) and re.search(r"[A-Za-z0-9.\-*/()]$", prefix):
-                unit = unit_candidate
-                item_name = prefix
-
-    if not model:
-        # 末尾英文/数字组合通常是规格型号，如 RIB550QR / DJIAS1 / 8-65-30
-        m_model = re.search(r"([A-Za-z0-9][A-Za-z0-9.\-*/]{1,})$", item_name)
-        if m_model:
-            candidate = m_model.group(1).strip(".-*/")
-            if len(candidate) >= 2 and re.search(r"[A-Za-z0-9]", candidate):
-                model = candidate
-                item_name = item_name[: m_model.start()].strip()
-
-    # 兜底：型号被并到产品名中时，优先识别尾部“型号+单位”
-    if item_name and not model:
-        packed = re.search(r"(?P<name>.+?)(?P<model>[A-Za-z0-9][A-Za-z0-9.\-*/()（）]{2,})(?P<unit>[A-Za-z]{1,4}|[\u4e00-\u9fff]{1,3})?$", item_name)
-        if packed:
-            name_candidate = packed.group("name").strip()
-            model_candidate = packed.group("model").strip(".-*/")
-            unit_candidate = (packed.group("unit") or "").strip()
-            if name_candidate and model_candidate and re.search(r"[A-Za-z]", model_candidate):
-                item_name = name_candidate
-                model = model_candidate
-                if unit_candidate and not unit and looks_like_unit_token(unit_candidate):
+    # 保守策略：仅在没有空格的串行情形下，从 item_name 自动拆分 model/unit。
+    # 对于“DJI CP. Matrice 4T ...”这类空格分词文本，直接保留原始内容。
+    if not has_spacing:
+        if not unit:
+            m_unit = re.search(r"(?P<unit>[A-Za-z]{1,4}|[\u4e00-\u9fff]{1,3})$", compact_item)
+            if m_unit:
+                unit_candidate = m_unit.group("unit")
+                prefix = compact_item[: m_unit.start()].strip()
+                if prefix and looks_like_unit_token(unit_candidate) and re.search(r"[A-Za-z0-9.\-*/()]$", prefix):
                     unit = unit_candidate
+                    compact_item = prefix
+
+        if not model:
+            m_model = re.search(r"([A-Za-z0-9][A-Za-z0-9.\-*/]{1,})$", compact_item)
+            if m_model:
+                candidate = m_model.group(1).strip(".-*/")
+                if len(candidate) >= 2 and re.search(r"[A-Za-z0-9]", candidate):
+                    model = candidate
+                    compact_item = compact_item[: m_model.start()].strip()
+
+        if compact_item and not model:
+            packed = re.search(r"(?P<name>.+?)(?P<model>[A-Za-z0-9][A-Za-z0-9.\-*/()（）]{2,})(?P<unit>[A-Za-z]{1,4}|[\u4e00-\u9fff]{1,3})?$", compact_item)
+            if packed:
+                name_candidate = packed.group("name").strip()
+                model_candidate = packed.group("model").strip(".-*/")
+                unit_candidate = (packed.group("unit") or "").strip()
+                if name_candidate and model_candidate and re.search(r"[A-Za-z]", model_candidate):
+                    compact_item = name_candidate
+                    model = model_candidate
+                    if unit_candidate and not unit and looks_like_unit_token(unit_candidate):
+                        unit = unit_candidate
+
+        item_name = compact_item
 
     item_name = re.sub(r"\s+", " ", item_name).strip()
     model = re.sub(r"\s+", " ", model).strip()
