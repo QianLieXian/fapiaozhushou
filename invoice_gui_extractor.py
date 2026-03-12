@@ -147,11 +147,17 @@ def split_name_model_unit(item_name: str, model: str, unit: str) -> Dict[str, st
     if not item_name:
         return {"item_name": item_name, "model": model, "unit": unit}
 
+    unit_pattern = r"(?:台|套|条|件|个|把|双|米|m|M|cm|CM|只|支|瓶|箱|辆|架|根|张|块|组|副|顶|盏|卷)"
+
     if not unit:
-        m_unit = re.search(r"(台|套|条|件|个|把|双|米|m|M|cm|CM|只|支|瓶|箱|辆|架)$", item_name)
+        m_unit = re.search(rf"({unit_pattern})$", item_name)
         if m_unit:
-            unit = m_unit.group(1)
-            item_name = item_name[: -len(unit)].strip()
+            unit_candidate = m_unit.group(1)
+            prefix = item_name[: -len(unit_candidate)].strip()
+            # 避免把正常中文品名末字误拆成单位（如“手套”）
+            if prefix and re.search(r"[A-Za-z0-9.\-*/()]$", prefix):
+                unit = unit_candidate
+                item_name = prefix
 
     if not model:
         # 末尾英文/数字组合通常是规格型号，如 RIB550QR / DJIAS1 / 8-65-30
@@ -161,6 +167,22 @@ def split_name_model_unit(item_name: str, model: str, unit: str) -> Dict[str, st
             if len(candidate) >= 2 and re.search(r"[A-Za-z0-9]", candidate):
                 model = candidate
                 item_name = item_name[: m_model.start()].strip()
+
+    # 兜底：型号被并到产品名中时，优先识别尾部“型号+单位”
+    if item_name and not model:
+        packed = re.search(
+            rf"(?P<name>.+?)(?P<model>[A-Za-z0-9][A-Za-z0-9.\-*/()（）]{2,})(?P<unit>{unit_pattern})?$",
+            item_name,
+        )
+        if packed:
+            name_candidate = packed.group("name").strip()
+            model_candidate = packed.group("model").strip(".-*/")
+            unit_candidate = (packed.group("unit") or "").strip()
+            if name_candidate and model_candidate and re.search(r"[A-Za-z]", model_candidate):
+                item_name = name_candidate
+                model = model_candidate
+                if unit_candidate and not unit:
+                    unit = unit_candidate
 
     item_name = re.sub(r"\s+", " ", item_name).strip()
     model = re.sub(r"\s+", " ", model).strip()
@@ -409,32 +431,85 @@ def extract_items(text: str) -> List[Dict[str, str]]:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     items = []
 
-    # 先用跨行正则提取，兼容“项目名称换行 + 数字在下一行”的情况
+    def parse_item_line(line: str) -> Optional[Dict[str, str]]:
+        line = re.sub(r"\s+", " ", line).strip()
+        if not line:
+            return None
+
+        # 从右向左提取金额列，避免产品名/规格型号/单位串行污染前半段。
+        number_pat = r"[0-9]+(?:\.[0-9]+)?"
+        tail = re.search(
+            rf"(?P<quantity>{number_pat})\s+"
+            rf"(?P<unit_price>{number_pat})\s+"
+            rf"(?P<amount>{number_pat})\s+"
+            rf"(?P<tax_rate>{number_pat}%?)\s+"
+            rf"(?P<tax_amount>{number_pat})$",
+            line,
+        )
+        if not tail:
+            return None
+
+        prefix = line[: tail.start()].strip().lstrip("*").strip()
+        if not prefix:
+            return None
+
+        chunks = prefix.split()
+        unit = ""
+        model = ""
+        item_name = prefix
+        if len(chunks) >= 2:
+            possible_unit = chunks[-1]
+            possible_model = chunks[-2] if len(chunks) >= 2 else ""
+            if re.fullmatch(r"(?:台|套|条|件|个|把|双|米|m|M|cm|CM|只|支|瓶|箱|辆|架|根|张|块|组|副|顶|盏|卷)", possible_unit):
+                unit = possible_unit
+                if re.search(r"[A-Za-z0-9]", possible_model):
+                    model = possible_model
+                    item_name = " ".join(chunks[:-2]).strip()
+                else:
+                    item_name = " ".join(chunks[:-1]).strip()
+
+        return {
+            "item_name": item_name,
+            "model": model,
+            "unit": unit,
+            "quantity": tail.group("quantity"),
+            "unit_price": tail.group("unit_price"),
+            "amount": tail.group("amount"),
+            "tax_rate": tail.group("tax_rate"),
+            "tax_amount": tail.group("tax_amount"),
+        }
+
+    # 先用跨行明细分段提取，兼容“项目名称换行 + 数字在下一行”的情况
     block = first_match(r"(?:项目名称|产品名称).*?(?=价税合计|合计|备注|$)", text, flags=re.S, group=0)
     if block:
-        multiline_pattern = re.compile(
-            r"(\*[\s\S]*?)\s+"
-            r"([0-9]+(?:\.[0-9]+)?)\s+"
-            r"([0-9]+(?:\.[0-9]+)?)\s+"
-            r"([0-9]+(?:\.[0-9]+)?)\s+"
-            r"([0-9]+(?:\.[0-9]+)?%?)\s+"
-            r"([0-9]+(?:\.[0-9]+)?)"
-        )
+        detail_lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+        current_idx = -1
+        for ln in detail_lines:
+            ln_compact = compact_label(ln)
+            if any(flag in ln_compact for flag in ["项目名称", "规格型号", "税率/征收率", "税额"]):
+                continue
+            if any(stop in ln_compact for stop in ["价税合计", "备注", "开票人"]) or ln_compact.startswith("合计"):
+                break
 
-        for m in multiline_pattern.finditer(block):
-            raw_name = re.sub(r"\s+", " ", m.group(1)).strip().lstrip("*")
-            items.append(
-                {
-                    "item_name": raw_name,
-                    "model": "",
-                    "unit": "",
-                    "quantity": m.group(2),
-                    "unit_price": m.group(3),
-                    "amount": m.group(4),
-                    "tax_rate": m.group(5),
-                    "tax_amount": m.group(6),
-                }
-            )
+            parsed = parse_item_line(ln)
+            if parsed:
+                items.append(parsed)
+                current_idx = len(items) - 1
+                continue
+
+            if current_idx < 0:
+                continue
+
+            extra = re.sub(r"\s+", " ", ln).strip().lstrip("*")
+            if not extra:
+                continue
+
+            # 折行补全：优先补到规格型号，若明显是中文品名描述则补到品名
+            if re.search(r"[A-Za-z0-9]", extra) or any(ch in extra for ch in ["(", ")", "（", "）", ".", "-"]):
+                target = "model"
+            else:
+                target = "item_name"
+            items[current_idx][target] = (items[current_idx][target] + " " + extra).strip()
 
     if items:
         return items
@@ -446,30 +521,9 @@ def extract_items(text: str) -> List[Dict[str, str]]:
             continue
 
         line_norm = re.sub(r"\s+", " ", line)
-        pattern = (
-            r"^(\*[^\s]+(?:\s+[^\s]+)*)\s+"
-            r"([^\s]*)\s+"
-            r"([^\s]*)\s+"
-            r"([0-9.]+)\s+"
-            r"([0-9.]+)\s+"
-            r"([0-9.]+)\s+"
-            r"([0-9.]+%?)\s+"
-            r"([0-9.]+)$"
-        )
-        m = re.match(pattern, line_norm)
-        if m:
-            items.append(
-                {
-                    "item_name": m.group(1).lstrip("*"),
-                    "model": m.group(2),
-                    "unit": m.group(3),
-                    "quantity": m.group(4),
-                    "unit_price": m.group(5),
-                    "amount": m.group(6),
-                    "tax_rate": m.group(7),
-                    "tax_amount": m.group(8),
-                }
-            )
+        parsed = parse_item_line(line_norm)
+        if parsed:
+            items.append(parsed)
             continue
 
         fallback = re.match(
