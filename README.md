@@ -113,3 +113,8 @@ pip install pandas openpyxl
 ```bash
 pip install pdfplumber
 ```
+
+### 4) 报错 `no such group`
+
+- 该问题通常由正则表达式使用了“非捕获分组 `(?:...)`”，但代码仍尝试读取 `group(1)` 引起。
+- 当前版本已修复：匹配函数会在“无捕获组”时自动回退到完整匹配，避免此类崩溃。
