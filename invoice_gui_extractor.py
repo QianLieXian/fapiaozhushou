@@ -127,6 +127,22 @@ def clean_money(value: str) -> str:
 def extract_header_fields(text: str) -> Dict[str, str]:
     compact = compact_label(text)
 
+    def clean_party_name(name: str) -> str:
+        name = (name or "").strip()
+        if not name:
+            return ""
+
+        name = re.sub(r"^名称[:：]?", "", name).strip()
+        # 防止“销 名称:xxx”或“销售方名称:xxx”等串到同一字段
+        name = re.split(r"(?:销\s*名称|销售方\s*名称)\s*[:：]", name, maxsplit=1)[0].strip()
+        # 防止税号、地址等内容误拼到名称里
+        name = re.split(
+            r"(?:统一社会信用代码/?纳税人识别号|纳税人识别号|地址|开户行|电话|账号|销售方信息|价税合计)",
+            name,
+            maxsplit=1,
+        )[0].strip()
+        return name
+
     def extract_party_fields(raw_text: str, party: str) -> Dict[str, str]:
         # 兼容“购买方信息/购 买 方 信 息/竖排换行”等布局
         party_map = {
@@ -142,7 +158,7 @@ def extract_header_fields(text: str) -> Dict[str, str]:
 
         name = first_match(r"名称[:：]?([^\n]+?)(?:统一社会信用代码|纳税人识别号|地址|开户行|$)", block)
         tax_no = first_match(r"(?:统一社会信用代码/?纳税人识别号|纳税人识别号)[:：]?([0-9A-Z]{15,20})", block)
-        return {"name": name, "tax_no": tax_no}
+        return {"name": clean_party_name(name), "tax_no": tax_no}
 
     fields = {
         "invoice_number": first_match(r"发票号码\s*:\s*([0-9A-Za-z]+)", text),
@@ -165,9 +181,24 @@ def extract_header_fields(text: str) -> Dict[str, str]:
     if not fields["buyer_name"] or not fields["seller_name"]:
         names = re.findall(r"名称\s*[:：]\s*([^\n]+)", text)
         if len(names) >= 1 and not fields["buyer_name"]:
-            fields["buyer_name"] = names[0].strip()
+            fields["buyer_name"] = clean_party_name(names[0])
         if len(names) >= 2 and not fields["seller_name"]:
-            fields["seller_name"] = names[1].strip()
+            fields["seller_name"] = clean_party_name(names[1])
+
+    # 再兜底：压缩文本里按“名称:”顺序提取，避免同一行串到一起
+    if not fields["buyer_name"] or not fields["seller_name"]:
+        compact_names = re.findall(
+            r"名称[:：](.*?)(?=(?:统一社会信用代码/?纳税人识别号|纳税人识别号|地址|开户行|销售方信息|价税合计|名称[:：]|$))",
+            compact,
+        )
+        compact_names = [clean_party_name(n) for n in compact_names if clean_party_name(n)]
+        if len(compact_names) >= 1 and not fields["buyer_name"]:
+            fields["buyer_name"] = compact_names[0]
+        if len(compact_names) >= 2 and not fields["seller_name"]:
+            fields["seller_name"] = compact_names[1]
+
+    fields["buyer_name"] = clean_party_name(fields["buyer_name"])
+    fields["seller_name"] = clean_party_name(fields["seller_name"])
 
     if not fields["buyer_tax_no"] or not fields["seller_tax_no"]:
         tax_list = re.findall(r"(?:统一社会信用代码/?纳税人识别号|纳税人识别号)\s*[:：]\s*([0-9A-Z]{15,20})", compact)
