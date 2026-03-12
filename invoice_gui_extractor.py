@@ -114,12 +114,36 @@ def first_match(pattern: str, text: str, flags: int = 0) -> str:
     return m.group(1).strip() if m else ""
 
 
+def compact_label(text: str) -> str:
+    """Remove whitespace/newlines for matching vertical or split labels."""
+    return re.sub(r"\s+", "", text)
+
+
 def clean_money(value: str) -> str:
     value = value.replace("￥", "").replace("¥", "").strip()
     return value
 
 
 def extract_header_fields(text: str) -> Dict[str, str]:
+    compact = compact_label(text)
+
+    def extract_party_fields(raw_text: str, party: str) -> Dict[str, str]:
+        # 兼容“购买方信息/购 买 方 信 息/竖排换行”等布局
+        party_map = {
+            "buyer": ("购买方信息", "销售方信息"),
+            "seller": ("销售方信息", "价税合计"),
+        }
+        begin, end = party_map[party]
+        block = first_match(
+            rf"{begin}(.*?)(?:{end}|$)",
+            compact_label(raw_text),
+            flags=re.S,
+        )
+
+        name = first_match(r"名称[:：]?([^\n]+?)(?:统一社会信用代码|纳税人识别号|地址|开户行|$)", block)
+        tax_no = first_match(r"(?:统一社会信用代码/?纳税人识别号|纳税人识别号)[:：]?([0-9A-Z]{15,20})", block)
+        return {"name": name, "tax_no": tax_no}
+
     fields = {
         "invoice_number": first_match(r"发票号码\s*:\s*([0-9A-Za-z]+)", text),
         "invoice_date": first_match(r"开票日期\s*:\s*([0-9]{4}[-/年][0-9]{1,2}[-/月][0-9]{1,2}日?)", text),
@@ -130,28 +154,49 @@ def extract_header_fields(text: str) -> Dict[str, str]:
         "total": "",
     }
 
-    buyer_block = first_match(r"购买方信息[\s\S]{0,200}?名称\s*:\s*([^\n]+)", text)
-    if not buyer_block:
-        buyer_block = first_match(r"购\s*买\s*方\s*信\s*息[\s\S]{0,200}?名称\s*:\s*([^\n]+)", text)
-    fields["buyer_name"] = buyer_block
-    fields["buyer_tax_no"] = first_match(
-        r"购买方信息[\s\S]{0,300}?统一社会信用代码/纳税人识别号\s*:\s*([0-9A-Z]+)", text
-    ) or first_match(
-        r"购\s*买\s*方\s*信\s*息[\s\S]{0,300}?统一社会信用代码/纳税人识别号\s*:\s*([0-9A-Z]+)", text
-    )
+    buyer_fields = extract_party_fields(text, "buyer")
+    seller_fields = extract_party_fields(text, "seller")
+    fields["buyer_name"] = buyer_fields["name"]
+    fields["buyer_tax_no"] = buyer_fields["tax_no"]
+    fields["seller_name"] = seller_fields["name"]
+    fields["seller_tax_no"] = seller_fields["tax_no"]
 
-    fields["seller_name"] = first_match(r"销售方信息[\s\S]{0,200}?名称\s*:\s*([^\n]+)", text) or first_match(
-        r"销\s*售\s*方\s*信\s*息[\s\S]{0,200}?名称\s*:\s*([^\n]+)", text
-    )
-    fields["seller_tax_no"] = first_match(
-        r"销售方信息[\s\S]{0,300}?统一社会信用代码/纳税人识别号\s*:\s*([0-9A-Z]+)", text
-    ) or first_match(
-        r"销\s*售\s*方\s*信\s*息[\s\S]{0,300}?统一社会信用代码/纳税人识别号\s*:\s*([0-9A-Z]+)", text
-    )
+    # 兜底：某些模板无法可靠切块时，名称/税号按出现顺序取第1个买方、第2个卖方
+    if not fields["buyer_name"] or not fields["seller_name"]:
+        names = re.findall(r"名称\s*[:：]\s*([^\n]+)", text)
+        if len(names) >= 1 and not fields["buyer_name"]:
+            fields["buyer_name"] = names[0].strip()
+        if len(names) >= 2 and not fields["seller_name"]:
+            fields["seller_name"] = names[1].strip()
+
+    if not fields["buyer_tax_no"] or not fields["seller_tax_no"]:
+        tax_list = re.findall(r"(?:统一社会信用代码/?纳税人识别号|纳税人识别号)\s*[:：]\s*([0-9A-Z]{15,20})", compact)
+        if len(tax_list) >= 1 and not fields["buyer_tax_no"]:
+            fields["buyer_tax_no"] = tax_list[0].strip()
+        if len(tax_list) >= 2 and not fields["seller_tax_no"]:
+            fields["seller_tax_no"] = tax_list[1].strip()
 
     total = first_match(r"\(小写\)\s*[¥￥]?\s*([0-9]+(?:\.[0-9]+)?)", text)
     fields["total"] = clean_money(total)
     return fields
+
+
+def open_output_folder(path: str):
+    try:
+        if os.name == "nt":
+            os.startfile(path)
+            return
+        if os.name == "posix":
+            import subprocess
+            import sys
+
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+    except Exception:
+        # 打开失败不影响主流程
+        pass
 
 
 def extract_items(text: str) -> List[Dict[str, str]]:
@@ -450,6 +495,7 @@ class InvoiceApp:
 
             self.status_var.set("处理完成")
             messagebox.showinfo("完成", f"导出完成，共处理 {total} 个PDF。")
+            open_output_folder(out_dir)
         except Exception as e:
             self.status_var.set("处理失败")
             messagebox.showerror("错误", f"处理过程中出现问题:\n{e}")
