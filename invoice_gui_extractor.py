@@ -101,9 +101,26 @@ def extract_text_from_pdf(pdf_path: str) -> str:
     return normalize_text("\n".join(pages))
 
 
-def first_match(pattern: str, text: str, flags: int = 0) -> str:
+def first_match(pattern: str, text: str, flags: int = 0, group: int = 1) -> str:
+    """Return regex match content safely.
+
+    Defaults to capturing group 1 for historical compatibility. If the pattern
+    has no capturing groups, it automatically falls back to the full match.
+    """
     m = re.search(pattern, text, flags)
-    return m.group(1).strip() if m else ""
+    if not m:
+        return ""
+
+    if group == 0:
+        return m.group(0).strip()
+
+    if m.lastindex is None:
+        return m.group(0).strip()
+
+    if group <= m.lastindex:
+        return m.group(group).strip()
+
+    return ""
 
 
 def compact_label(text: str) -> str:
@@ -358,7 +375,7 @@ def extract_items(text: str) -> List[Dict[str, str]]:
     items = []
 
     # 先用跨行正则提取，兼容“项目名称换行 + 数字在下一行”的情况
-    block = first_match(r"(?:项目名称|产品名称).*?(?=价税合计|合计|备注|$)", text, flags=re.S)
+    block = first_match(r"(?:项目名称|产品名称).*?(?=价税合计|合计|备注|$)", text, flags=re.S, group=0)
     if block:
         multiline_pattern = re.compile(
             r"(\*[\s\S]*?)\s+"
