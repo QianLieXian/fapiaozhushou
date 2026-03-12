@@ -133,6 +133,41 @@ def clean_money(value: str) -> str:
     return value
 
 
+def split_name_model_unit(item_name: str, model: str, unit: str) -> Dict[str, str]:
+    """Split merged item text into item/model/unit when possible.
+
+    Handles compact content such as:
+    - 交通运输设备*游艇拖车RIB550QR台
+    - 公共安全设备*消防水带8-65-30条
+    """
+    item_name = (item_name or "").strip()
+    model = (model or "").strip()
+    unit = (unit or "").strip()
+
+    if not item_name:
+        return {"item_name": item_name, "model": model, "unit": unit}
+
+    if not unit:
+        m_unit = re.search(r"(台|套|条|件|个|把|双|米|m|M|cm|CM|只|支|瓶|箱|辆|架)$", item_name)
+        if m_unit:
+            unit = m_unit.group(1)
+            item_name = item_name[: -len(unit)].strip()
+
+    if not model:
+        # 末尾英文/数字组合通常是规格型号，如 RIB550QR / DJIAS1 / 8-65-30
+        m_model = re.search(r"([A-Za-z0-9][A-Za-z0-9.\-*/]{1,})$", item_name)
+        if m_model:
+            candidate = m_model.group(1).strip(".-*/")
+            if len(candidate) >= 2 and re.search(r"[A-Za-z0-9]", candidate):
+                model = candidate
+                item_name = item_name[: m_model.start()].strip()
+
+    item_name = re.sub(r"\s+", " ", item_name).strip()
+    model = re.sub(r"\s+", " ", model).strip()
+    unit = re.sub(r"\s+", " ", unit).strip()
+    return {"item_name": item_name, "model": model, "unit": unit}
+
+
 def extract_header_fields(text: str) -> Dict[str, str]:
     compact = compact_label(text)
 
@@ -387,7 +422,7 @@ def extract_items(text: str) -> List[Dict[str, str]]:
         )
 
         for m in multiline_pattern.finditer(block):
-            raw_name = re.sub(r"\s+", "", m.group(1)).lstrip("*")
+            raw_name = re.sub(r"\s+", " ", m.group(1)).strip().lstrip("*")
             items.append(
                 {
                     "item_name": raw_name,
@@ -455,6 +490,24 @@ def extract_items(text: str) -> List[Dict[str, str]]:
                 }
             )
 
+        # 纯文本明细（无数量/金额）兜底：如“交通运输设备*游艇拖车RIB550QR台”
+        pure_text = re.match(r"^(\*?\S.*)$", line_norm)
+        if pure_text and not re.search(r"\d+\s+\d+", line_norm):
+            raw = pure_text.group(1).lstrip("*").strip()
+            if raw and any(ch in raw for ch in ["*", "设备", "产品", "装置"]):
+                items.append(
+                    {
+                        "item_name": raw,
+                        "model": "",
+                        "unit": "",
+                        "quantity": "",
+                        "unit_price": "",
+                        "amount": "",
+                        "tax_rate": "",
+                        "tax_amount": "",
+                    }
+                )
+
     return items
 
 
@@ -479,6 +532,7 @@ def parse_invoice(pdf_path: str) -> List[InvoiceRow]:
 
     rows = []
     for item in items:
+        normalized_item = split_name_model_unit(item.get("item_name", ""), item.get("model", ""), item.get("unit", ""))
         rows.append(
             InvoiceRow(
                 source_file=os.path.basename(pdf_path),
@@ -488,9 +542,9 @@ def parse_invoice(pdf_path: str) -> List[InvoiceRow]:
                 buyer_tax_no=header["buyer_tax_no"],
                 seller_name=header["seller_name"],
                 seller_tax_no=header["seller_tax_no"],
-                item_name=item["item_name"],
-                model=item["model"],
-                unit=item["unit"],
+                item_name=normalized_item["item_name"],
+                model=normalized_item["model"],
+                unit=normalized_item["unit"],
                 quantity=item["quantity"],
                 unit_price=item["unit_price"],
                 amount=item["amount"],
