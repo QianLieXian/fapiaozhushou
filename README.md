@@ -53,7 +53,7 @@ python invoice_gui_extractor.py
 11. 税额
 12. 总价
 
-## 打包 EXE（Windows）
+## 打包 EXE（Windows，可在**无 Python 环境**电脑直接运行）
 
 ### 1) 安装打包工具
 
@@ -61,22 +61,43 @@ python invoice_gui_extractor.py
 pip install pyinstaller
 ```
 
-### 2) 执行打包
+### 2) 直接打包为**单个 exe**（推荐）
 
 在项目根目录运行：
 
 ```bash
-pyinstaller --noconfirm --clean --windowed --name fapiaozhushou invoice_gui_extractor.py
-```
-
-### 3) 产物目录
-
-- 可执行文件：`dist/fapiaozhushou/fapiaozhushou.exe`
-- 单文件模式如需使用，可改为：
-
-```bash
 pyinstaller --noconfirm --clean --onefile --windowed --name fapiaozhushou invoice_gui_extractor.py
 ```
+
+> 说明：`--onefile` 会把依赖全部打进一个 `fapiaozhushou.exe`，目标电脑即使没有安装 Python 也可以直接运行。
+
+### 3) 产物位置
+
+- 最终可执行文件：`dist/fapiaozhushou.exe`
+- 这是单文件交付方式，直接把这个 exe 发给别人即可（无需再带整个文件夹）
+
+### 4) 常用补充参数（可选）
+
+- 添加图标：`--icon app.ico`
+- 关闭控制台黑窗：`--windowed`（GUI 程序建议保留）
+- 每次重打包前清理缓存：`--clean`（已包含）
+
+例如：
+
+```bash
+pyinstaller --noconfirm --clean --onefile --windowed --name fapiaozhushou --icon app.ico invoice_gui_extractor.py
+```
+
+### 5) 首次运行说明
+
+- 单文件模式首次启动会先在临时目录解包，可能比目录模式稍慢，这是正常现象。
+- 若杀毒软件拦截，请将 `dist/fapiaozhushou.exe` 加白名单后再测试。
+
+### 6) 自检（在打包机器上）
+
+1. 双击 `dist/fapiaozhushou.exe`，确认界面可打开。
+2. 用 1 份样例 PDF 测试导出 `XLSX`。
+3. 再拷贝到**没有 Python** 的电脑上复测一次。
 
 ## 打包后功能不缺失建议
 
