@@ -209,7 +209,7 @@ def extract_items_by_layout(page, spec: Dict[str, Any]) -> List[Dict[str, str]]:
         record: Dict[str, str] = {}
         for field, (x0, x1) in item_columns.items():
             record[field] = crop_text(page, (x0, row_top, x1, row_bottom))
-        record["item_name"] = record.get("item_name", "").replace("\n", "").strip().lstrip("*")
+        record["item_name"] = record.get("item_name", "").replace("\n", "").strip()
         rows.append({
             "item_name": record.get("item_name", ""),
             "model": record.get("model", "").strip(),
@@ -520,7 +520,7 @@ def extract_items_from_tables(pdf_path: str) -> List[Dict[str, str]]:
                     def pick(key: str) -> str:
                         idx = col_map.get(key, -1)
                         return row[idx] if 0 <= idx < len(row) else ""
-                    item_name = pick("item_name").lstrip("*")
+                    item_name = pick("item_name")
                     amount = clean_money(pick("amount"))
                     tax_amount = clean_money(pick("tax_amount"))
                     quantity = pick("quantity")
@@ -611,7 +611,7 @@ def extract_items(text: str) -> List[Dict[str, str]]:
         )
         if not tail:
             return None
-        prefix = line[: tail.start()].strip().lstrip("*").strip()
+        prefix = line[: tail.start()].strip()
         if not prefix:
             return None
         chunks = prefix.split()
@@ -661,7 +661,7 @@ def extract_items(text: str) -> List[Dict[str, str]]:
                 continue
             if current_idx < 0:
                 continue
-            extra = re.sub(r"\s+", " ", ln).strip().lstrip("*")
+            extra = re.sub(r"\s+", " ", ln).strip()
             if not extra:
                 continue
             # 折行补全：优先补到规格型号，若明显是中文品名描述则补到品名
@@ -689,7 +689,7 @@ def extract_items(text: str) -> List[Dict[str, str]]:
         if fallback:
             items.append(
                 {
-                    "item_name": fallback.group(1).lstrip("*"),
+                    "item_name": fallback.group(1),
                     "model": "",
                     "unit": "",
                     "quantity": "",
@@ -702,7 +702,7 @@ def extract_items(text: str) -> List[Dict[str, str]]:
         # 纯文本明细（无数量/金额）兜底：如“交通运输设备*游艇拖车RIB550QR台”
         pure_text = re.match(r"^(\*?\S.*)$", line_norm)
         if pure_text and not re.search(r"\d+\s+\d+", line_norm):
-            raw = pure_text.group(1).lstrip("*").strip()
+            raw = pure_text.group(1).strip()
             if raw and any(ch in raw for ch in ["*", "设备", "产品", "装置"]):
                 items.append(
                     {
