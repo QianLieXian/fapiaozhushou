@@ -136,7 +136,7 @@ TEMPLATE_SPECS = {
             "unit_price": (295, 370),
             "amount": (370, 440),
             "tax_rate": (440, 520),
-            "tax_amount": (520, 595.3),
+            "tax_amount": (520, 595.2),
         },
         "anchor": {"x": (240, 300), "top": (157, 225), "row_top_offset": -0.8, "next_minus": 3.0, "last_bottom": 247.0},
     },
@@ -232,8 +232,42 @@ def normalize_text(text: str) -> str:
     text = text.replace("（", "(").replace("）", ")")
     text = re.sub(r"[ \t]+", " ", text)
     return text
+
+
+def safe_bbox(page, bbox: Tuple[float, float, float, float], min_span: float = 0.1) -> Optional[Tuple[float, float, float, float]]:
+    """Clamp bbox into page boundary to avoid pdfplumber crop out-of-range errors."""
+    x0, top, x1, bottom = [float(v) for v in bbox]
+    page_width = float(page.width)
+    page_height = float(page.height)
+
+    x0 = max(0.0, min(x0, page_width))
+    x1 = max(0.0, min(x1, page_width))
+    top = max(0.0, min(top, page_height))
+    bottom = max(0.0, min(bottom, page_height))
+
+    if x1 - x0 < min_span:
+        if x0 >= page_width:
+            x0 = max(0.0, page_width - min_span)
+            x1 = page_width
+        else:
+            x1 = min(page_width, x0 + min_span)
+    if bottom - top < min_span:
+        if top >= page_height:
+            top = max(0.0, page_height - min_span)
+            bottom = page_height
+        else:
+            bottom = min(page_height, top + min_span)
+
+    if x1 <= x0 or bottom <= top:
+        return None
+    return (x0, top, x1, bottom)
+
+
 def crop_text(page, bbox: Tuple[float, float, float, float]) -> str:
-    text = page.crop(bbox).extract_text(x_tolerance=1, y_tolerance=3) or ""
+    clipped_bbox = safe_bbox(page, bbox)
+    if clipped_bbox is None:
+        return ""
+    text = page.crop(clipped_bbox).extract_text(x_tolerance=1, y_tolerance=3) or ""
     return normalize_text(text).strip()
 def detect_invoice_templates(page) -> List[str]:
     title = crop_text(page, (150, 8, 440, 55))
