@@ -114,6 +114,84 @@ TEMPLATE_SPECS = {
         },
         "anchor": {"x": (281, 291), "top": (158, 245), "row_top_offset": -0.8, "next_minus": 3.0, "last_bottom": 258.5},
     },
+    "cn_e_invoice_common_compact_v2_firegear": {
+        "title_keywords": ["电子发票", "普通发票"],
+        "height_max": 430,
+        "regions": {
+            "title": (160, 15, 425, 50),
+            "meta_number": (430, 20, 585, 48),
+            "meta_date": (430, 40, 585, 68),
+            "buyer": (12.8, 85.0, 298.2, 147.5),
+            "seller": (298.2, 85.0, 582.6, 147.5),
+            "items_band": (12.8, 147.4, 582.6, 249.5),
+            "grand_total": (12.8, 249.4, 582.6, 294.9),
+            "note": (12.8, 294.8, 582.6, 351.6),
+            "issuer": (40, 352.0, 180.0, 390.0),
+        },
+        "item_columns": {
+            "item_name": (0, 115),
+            "model": (115, 180),
+            "unit": (180, 240),
+            "quantity": (240, 295),
+            "unit_price": (295, 370),
+            "amount": (370, 440),
+            "tax_rate": (440, 520),
+            "tax_amount": (520, 595.3),
+        },
+        "anchor": {"x": (240, 300), "top": (157, 225), "row_top_offset": -0.8, "next_minus": 3.0, "last_bottom": 247.0},
+    },
+    "cn_e_invoice_common_compact_v3_shoes": {
+        "title_keywords": ["电子发票", "普通发票"],
+        "height_max": 430,
+        "regions": {
+            "title": (160, 15, 425, 50),
+            "meta_number": (430, 20, 585, 48),
+            "meta_date": (430, 40, 585, 68),
+            "buyer": (30.33, 85.04, 298.20, 147.41),
+            "seller": (315.21, 85.04, 582.51, 147.41),
+            "items_band": (12.76, 147.41, 582.51, 272.13),
+            "grand_total": (12.76, 257.0, 583.0, 291.0),
+            "note": (30, 294, 583, 337),
+            "issuer": (40, 360, 200, 380),
+        },
+        "item_columns": {
+            "item_name": (0, 110),
+            "model": (110, 185),
+            "unit": (185, 230),
+            "quantity": (230, 295),
+            "unit_price": (295, 382),
+            "amount": (382, 442),
+            "tax_rate": (442, 525),
+            "tax_amount": (525, 590),
+        },
+        "anchor": {"x": (230, 300), "top": (158, 210), "row_top_offset": -0.8, "next_minus": 3.0, "last_bottom": 232.0},
+    },
+    "cn_e_invoice_common_compact_v4_packaging": {
+        "title_keywords": ["电子发票", "普通发票"],
+        "height_max": 430,
+        "regions": {
+            "title": (160, 15, 425, 50),
+            "meta_number": (430, 20, 585, 48),
+            "meta_date": (430, 40, 585, 68),
+            "buyer": (30, 90, 298, 145),
+            "seller": (315, 90, 582, 145),
+            "items_band": (12.76, 147.41, 582.51, 272.13),
+            "grand_total": (12.76, 272.13, 582.51, 294.81),
+            "note": (12.76, 294.81, 582.51, 351.50),
+            "issuer": (12, 360, 120, 392),
+        },
+        "item_columns": {
+            "item_name": (12, 114),
+            "model": (114, 188),
+            "unit": (188, 229),
+            "quantity": (229, 297),
+            "unit_price": (297, 392),
+            "amount": (392, 446),
+            "tax_rate": (446, 551),
+            "tax_amount": (551, 583),
+        },
+        "anchor": {"x": (228, 300), "top": (158, 220), "row_top_offset": -0.8, "next_minus": 3.0, "last_bottom": 240.0},
+    },
 }
 @dataclass
 class InvoiceRow:
@@ -157,17 +235,37 @@ def normalize_text(text: str) -> str:
 def crop_text(page, bbox: Tuple[float, float, float, float]) -> str:
     text = page.crop(bbox).extract_text(x_tolerance=1, y_tolerance=3) or ""
     return normalize_text(text).strip()
-def detect_invoice_template(page) -> str:
+def detect_invoice_templates(page) -> List[str]:
     title = crop_text(page, (150, 8, 440, 55))
     title_compact = compact_label(title)
     h = float(page.height)
+    candidates: List[str] = []
     if "增值税专用发票" in title_compact:
-        return "cn_vat_special_compact_v1"
+        candidates.append("cn_vat_special_compact_v1")
     if "普通发票" in title_compact:
         if h > 430:
-            return "cn_e_invoice_common_tall_v1"
-        return "cn_e_invoice_common_compact_v1"
-    return ""
+            candidates.append("cn_e_invoice_common_tall_v1")
+        else:
+            candidates.extend([
+                "cn_e_invoice_common_compact_v1",
+                "cn_e_invoice_common_compact_v2_firegear",
+                "cn_e_invoice_common_compact_v3_shoes",
+                "cn_e_invoice_common_compact_v4_packaging",
+            ])
+    return candidates
+
+
+def valid_page_words(page) -> List[Dict[str, Any]]:
+    words = page.extract_words(use_text_flow=True) or []
+    filtered: List[Dict[str, Any]] = []
+    for w in words:
+        top = float(w.get("top", -1))
+        bottom = float(w.get("bottom", -1))
+        x0 = float(w.get("x0", -1))
+        x1 = float(w.get("x1", -1))
+        if 0 <= top <= page.height and 0 <= bottom <= page.height and -1 <= x0 <= page.width + 1 and -1 <= x1 <= page.width + 1:
+            filtered.append(w)
+    return filtered
 def extract_label_value(block_text: str, labels: List[str]) -> str:
     compact = compact_label(block_text)
     for label in labels:
@@ -176,7 +274,7 @@ def extract_label_value(block_text: str, labels: List[str]) -> str:
             return m.group(1).strip()
     return ""
 def extract_anchors_from_quantity(page, anchor_spec: Dict[str, Any]) -> List[float]:
-    words = page.extract_words(use_text_flow=True) or []
+    words = valid_page_words(page)
     x0, x1 = anchor_spec["x"]
     top0, top1 = anchor_spec["top"]
     anchors: List[float] = []
@@ -229,42 +327,53 @@ def extract_structured_invoice(pdf_path: str) -> Optional[Dict[str, Any]]:
         if not pdf.pages:
             return None
         page = pdf.pages[0]
-        template_id = detect_invoice_template(page)
-        if not template_id:
+        template_candidates = detect_invoice_templates(page)
+        if not template_candidates:
             return None
-        spec = TEMPLATE_SPECS.get(template_id)
-        if not spec:
-            return None
-        regions = spec["regions"]
-        buyer_text = crop_text(page, regions["buyer"])
-        seller_text = crop_text(page, regions["seller"])
-        grand_total_text = crop_text(page, regions["grand_total"])
-        items_band_text = crop_text(page, regions["items_band"])
-        meta_number_text = crop_text(page, regions["meta_number"])
-        meta_date_text = crop_text(page, regions["meta_date"])
-        invoice_number = first_match(r"发票号码[:：]?\s*([0-9A-Za-z]+)", meta_number_text)
-        invoice_date = first_match(r"开票日期[:：]?\s*([0-9]{4}[-/年][0-9]{1,2}[-/月][0-9]{1,2}日?)", meta_date_text)
-        buyer_name = first_match(r"名称[:：]?(.+?)(?:统一社会信用代码|纳税人识别号|$)", compact_label(buyer_text))
-        seller_name = first_match(r"名称[:：]?(.+?)(?:统一社会信用代码|纳税人识别号|$)", compact_label(seller_text))
-        buyer_tax_no = first_match(r"(?:统一社会信用代码/?纳税人识别号|纳税人识别号)[:：]?([0-9A-Z]{15,20})", compact_label(buyer_text))
-        seller_tax_no = first_match(r"(?:统一社会信用代码/?纳税人识别号|纳税人识别号)[:：]?([0-9A-Z]{15,20})", compact_label(seller_text))
-        money_vals = re.findall(r"([0-9]+\.[0-9]+)", f"{items_band_text}\n{grand_total_text}")
-        total = ""
-        if money_vals:
-            total = money_vals[-1]
-        items = extract_items_by_layout(page, spec)
-        return {
-            "header": {
-                "invoice_number": invoice_number,
-                "invoice_date": invoice_date,
-                "buyer_name": buyer_name,
-                "buyer_tax_no": buyer_tax_no,
-                "seller_name": seller_name,
-                "seller_tax_no": seller_tax_no,
-                "total": total,
-            },
-            "items": items,
-        }
+        best_data: Optional[Dict[str, Any]] = None
+        best_score = -1
+        for template_id in template_candidates:
+            spec = TEMPLATE_SPECS.get(template_id)
+            if not spec:
+                continue
+            regions = spec["regions"]
+            buyer_text = crop_text(page, regions["buyer"])
+            seller_text = crop_text(page, regions["seller"])
+            grand_total_text = crop_text(page, regions["grand_total"])
+            items_band_text = crop_text(page, regions["items_band"])
+            meta_number_text = crop_text(page, regions["meta_number"])
+            meta_date_text = crop_text(page, regions["meta_date"])
+            invoice_number = first_match(r"发票号码[:：]?\s*([0-9A-Za-z]+)", meta_number_text)
+            invoice_date = first_match(r"开票日期[:：]?\s*([0-9]{4}[-/年][0-9]{1,2}[-/月][0-9]{1,2}日?)", meta_date_text)
+            buyer_name = first_match(r"名称[:：]?(.+?)(?:统一社会信用代码|纳税人识别号|$)", compact_label(buyer_text))
+            seller_name = first_match(r"名称[:：]?(.+?)(?:统一社会信用代码|纳税人识别号|$)", compact_label(seller_text))
+            buyer_tax_no = first_match(r"(?:统一社会信用代码/?纳税人识别号|纳税人识别号)[:：]?([0-9A-Z]{15,20})", compact_label(buyer_text))
+            seller_tax_no = first_match(r"(?:统一社会信用代码/?纳税人识别号|纳税人识别号)[:：]?([0-9A-Z]{15,20})", compact_label(seller_text))
+            money_vals = re.findall(r"([0-9]+\.[0-9]+)", f"{items_band_text}\n{grand_total_text}")
+            total = money_vals[-1] if money_vals else ""
+            items = extract_items_by_layout(page, spec)
+            score = 0
+            score += 2 if invoice_number else 0
+            score += 2 if invoice_date else 0
+            score += 1 if buyer_tax_no else 0
+            score += 1 if seller_tax_no else 0
+            score += 1 if total else 0
+            score += min(len(items), 3)
+            if score > best_score:
+                best_score = score
+                best_data = {
+                    "header": {
+                        "invoice_number": invoice_number,
+                        "invoice_date": invoice_date,
+                        "buyer_name": buyer_name,
+                        "buyer_tax_no": buyer_tax_no,
+                        "seller_name": seller_name,
+                        "seller_tax_no": seller_tax_no,
+                        "total": total,
+                    },
+                    "items": items,
+                }
+        return best_data if best_score > 0 else None
 def extract_text_from_pdf(pdf_path: str) -> str:
     if pdfplumber is None:
         raise RuntimeError("缺少依赖: pdfplumber，请先安装 (pip install pdfplumber)")
