@@ -316,7 +316,8 @@ def split_name_model_unit(item_name: str, model: str, unit: str) -> Dict[str, st
             return False
         if re.fullmatch(r"[A-Za-z]{1,4}", token):
             return True
-        if re.fullmatch(r"[\u4e00-\u9fff]{1,3}", token):
+        # 中文单位通常较短（如“个/件/台/套/米/公斤”），长度放宽到 3 容易把品名末尾误拆。
+        if re.fullmatch(r"[\u4e00-\u9fff]{1,2}", token):
             return True
         return False
     # 保守策略：仅在没有空格的串行情形下，从 item_name 自动拆分 model/unit。
@@ -327,7 +328,8 @@ def split_name_model_unit(item_name: str, model: str, unit: str) -> Dict[str, st
             if m_unit:
                 unit_candidate = m_unit.group("unit")
                 prefix = compact_item[: m_unit.start()].strip()
-                if prefix and looks_like_unit_token(unit_candidate) and re.search(r"[A-Za-z0-9.\-*/()]$", prefix):
+                # 前缀末尾需为字母数字或常见型号分隔符；不接受 "*"，避免把“品名*后缀词”误判为单位。
+                if prefix and looks_like_unit_token(unit_candidate) and re.search(r"[A-Za-z0-9.\-/()]$", prefix):
                     unit = unit_candidate
                     compact_item = prefix
         if not model:
@@ -586,7 +588,7 @@ def extract_items(text: str) -> List[Dict[str, str]]:
                 return False
             if re.fullmatch(r"[A-Za-z]{1,4}", token):
                 return True
-            if re.fullmatch(r"[\u4e00-\u9fff]{1,3}", token):
+            if re.fullmatch(r"[\u4e00-\u9fff]{1,2}", token):
                 return True
             return False
         def looks_like_model_token(token: str) -> bool:
