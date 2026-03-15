@@ -88,6 +88,8 @@ python invoice_gui_extractor.py
 
 ## 打包 EXE（Windows，可在**无 Python 环境**电脑直接运行）
 
+> 如果你的目标机器包含 **Windows 7**，请优先看后面的「**Win7 兼容打包方案**」。
+
 ### 1) 安装打包工具
 
 ```bash
@@ -131,6 +133,80 @@ pyinstaller --noconfirm --clean --onefile --windowed --name fapiaozhushou --icon
 1. 双击 `dist/fapiaozhushou.exe`，确认界面可打开。
 2. 用 1 份样例 PDF 测试导出 `XLSX`。
 3. 再拷贝到**没有 Python** 的电脑上复测一次。
+
+## Win7 兼容打包方案（重点）
+
+你反馈的现象本质上是：
+
+- 新版 Python / 打包器生成的程序，可能依赖 Win7 不具备的系统 API；
+- 或依赖了较新的 VC++ 运行库，而 Win7 上安装困难。
+
+下面给两种可行方案。
+
+### 方案 A（推荐）：使用 Python 3.8 + 旧版 PyInstaller，在 Win7 环境打包
+
+这是最稳妥的方式，核心原则是：**用“最低目标系统”来打包**。
+
+#### 1) 准备环境
+
+- Python：`3.8.10`（最后一个 3.8 版本，兼容 Win7）
+- PyInstaller：`5.13.2`
+- 依赖按 `requirements.txt` 安装
+
+示例：
+
+```bash
+py -3.8 -m pip install -U pip
+py -3.8 -m pip install pyinstaller==5.13.2 -r requirements.txt
+```
+
+#### 2) 优先使用 `--onedir`（比 onefile 更稳）
+
+```bash
+py -3.8 -m PyInstaller --noconfirm --clean --onedir --windowed --name fapiaozhushou_win7 invoice_gui_extractor.py
+```
+
+生成目录在：`dist/fapiaozhushou_win7/`
+
+> 建议先交付 `onedir` 版本给 Win7 用户测试，稳定后再考虑 `--onefile`。
+
+#### 3) 如果必须单文件，再尝试 `--onefile`
+
+```bash
+py -3.8 -m PyInstaller --noconfirm --clean --onefile --windowed --name fapiaozhushou_win7 invoice_gui_extractor.py
+```
+
+若单文件在个别 Win7 机器启动慢或被拦截，回退到 `--onedir`。
+
+#### 4) 关键注意事项
+
+1. **尽量在 Win7 虚拟机或真机里打包**，不要在 Win10/11 打包后直接丢给 Win7。
+2. Win7 建议先安装系统补丁：`KB2999226 (Universal CRT)` 与 `SHA-2` 相关更新。
+3. 若报缺少运行库 DLL，把打包目录内（或 Python 安装目录中的）`vcruntime140.dll` 一并带上。
+
+---
+
+### 方案 B：Nuitka + MinGW64（避免依赖用户安装 VC++）
+
+当用户环境无法安装 VC++ 运行库时，可尝试 Nuitka 的 MinGW 构建链，运行时不要求用户再手动装 VC++。
+
+> 仍建议使用 Python 3.8，并在 Win7 环境实机验证。
+
+```bash
+py -3.8 -m pip install -U nuitka zstandard ordered-set
+py -3.8 -m nuitka --standalone --mingw64 --enable-plugin=tk-inter --windows-disable-console --output-dir=build_nuitka --assume-yes-for-downloads invoice_gui_extractor.py
+```
+
+输出目录中的可执行文件可直接分发测试。
+
+---
+
+### Win7 打包验收清单
+
+1. 在 Win7 干净环境（无 Python）直接启动程序。
+2. 导入 1 份 PDF，导出 XLSX 成功。
+3. 再测 2~3 份不同版式 PDF（含多页）。
+4. 若失败，优先回退到：`Python 3.8 + PyInstaller 5.13.2 + onedir + Win7 本机打包`。
 
 ## 打包后功能不缺失建议
 
