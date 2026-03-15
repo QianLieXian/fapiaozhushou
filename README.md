@@ -20,11 +20,14 @@
 
 - `cn_e_invoice_common_tall_v1`：普通发票长版（页面高度 > 430）
 - `cn_vat_special_compact_v1`：增值税专用发票短版
-- `cn_e_invoice_common_compact_v1`：普通发票短版（含“项目名换行”场景）
+- `cn_e_invoice_common_compact_v1`：普通发票短版（通用）
+- `cn_e_invoice_common_compact_v2_firegear`：普通发票短版（消防器材类样本）
+- `cn_e_invoice_common_compact_v3_shoes`：普通发票短版（鞋类样本）
+- `cn_e_invoice_common_compact_v4_packaging`：普通发票短版（塑料包装样本）
 
 ### 结构解剖方法（pdfplumber + pandas）
 
-1. **模板识别**：先读标题区（如“普通发票 / 增值税专用发票”）和页面高度。
+1. **模板识别**：先读标题区（如“普通发票 / 增值税专用发票”）和页面高度，再在候选模板中评分选最优。
 2. **固定字段提取**：对票号、日期、购销方、价税合计使用固定 `bbox` 裁剪。
 3. **明细行定位**：用数量列数字作为锚点（anchor row），按相邻锚点生成行区间。
 4. **按列切片**：每行再按固定 `x` 边界提取 `item_name/model/unit/quantity/unit_price/amount/tax_rate/tax_amount`。
@@ -32,6 +35,7 @@
 
 ### 为什么这样更稳
 
+- 先过滤页外脏字符（`0 <= top/bottom <= page.height`），避免隐藏文字污染字段。
 - 发票明细区域常见“看起来像表格，但列靠文字对齐”的情况，直接 `extract_table()` 容易糊行。
 - 锚点 + 列边界可以兼容：
   - 明细换行
