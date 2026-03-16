@@ -21,20 +21,39 @@ try:
 except ImportError:
     load_workbook = None
     PatternFill = Font = Alignment = None
-EXPORT_COLUMNS = [
-    "空",
-    "公司名称(销售方)",
-    "纳税人识别号(购买方税号)",
-    "发票编码(发票号码)",
-    "开票日期",
-    "空2",
-    "产品名称",
-    "型号(规格型号)",
-    "数量",
-    "金额",
-    "税额",
-    "总价",
-]
+EXPORT_SCHEMAS = {
+    "顺序1": [
+        "空",
+        "公司名称(销售方)",
+        "纳税人识别号(购买方税号)",
+        "发票编码(发票号码)",
+        "开票日期",
+        "空2",
+        "产品名称",
+        "型号(规格型号)",
+        "数量",
+        "金额",
+        "税额",
+        "总价",
+    ],
+    "顺序2": [
+        "空",
+        "购方单位名称(购买方单位名称)",
+        "公司名称(销售方单位名称)",
+        "发票编码",
+        "开票日期",
+        "到票日期(空)",
+        "产品名称(项目名称)",
+        "型号(规格型号)",
+        "数量",
+        "单位",
+        "金额",
+        "税额",
+        "总价(价税合计)",
+        "部门(空)",
+        "增/普(税率/征收率)",
+    ],
+}
 TEMPLATE_SPECS = {
     "cn_e_invoice_common_tall_v1": {
         "title_keywords": ["电子发票", "普通发票"],
@@ -211,21 +230,42 @@ class InvoiceRow:
     tax_rate: str = ""
     tax_amount: str = ""
     total: str = ""
-    def to_export_dict(self) -> Dict[str, str]:
-        return {
-            "空": "",
-            "公司名称(销售方)": self.seller_name,
-            "纳税人识别号(购买方税号)": self.buyer_tax_no,
-            "发票编码(发票号码)": self.invoice_number,
-            "开票日期": self.invoice_date,
-            "空2": "",
-            "产品名称": self.item_name,
-            "型号(规格型号)": self.model,
-            "数量": self.quantity,
-            "金额": self.amount,
-            "税额": self.tax_amount,
-            "总价": self.total,
+    def to_export_dict(self, schema_name: str = "顺序1") -> Dict[str, str]:
+        schema_data = {
+            "顺序1": {
+                "空": "",
+                "公司名称(销售方)": self.seller_name,
+                "纳税人识别号(购买方税号)": self.buyer_tax_no,
+                "发票编码(发票号码)": self.invoice_number,
+                "开票日期": self.invoice_date,
+                "空2": "",
+                "产品名称": self.item_name,
+                "型号(规格型号)": self.model,
+                "数量": self.quantity,
+                "金额": self.amount,
+                "税额": self.tax_amount,
+                "总价": self.total,
+            },
+            "顺序2": {
+                "空": "",
+                "购方单位名称(购买方单位名称)": self.buyer_name,
+                "公司名称(销售方单位名称)": self.seller_name,
+                "发票编码": self.invoice_number,
+                "开票日期": self.invoice_date,
+                "到票日期(空)": "",
+                "产品名称(项目名称)": self.item_name,
+                "型号(规格型号)": self.model,
+                "数量": self.quantity,
+                "单位": self.unit,
+                "金额": self.amount,
+                "税额": self.tax_amount,
+                "总价(价税合计)": self.total,
+                "部门(空)": "",
+                "增/普(税率/征收率)": self.tax_rate,
+            },
         }
+        selected_schema = schema_data.get(schema_name, schema_data["顺序1"])
+        return {col: selected_schema.get(col, "") for col in EXPORT_SCHEMAS[schema_name]}
 def normalize_text(text: str) -> str:
     text = text.replace("\u3000", " ")
     text = text.replace("：", ":")
@@ -906,12 +946,13 @@ def parse_invoice(pdf_path: str) -> List[InvoiceRow]:
             )
         )
     return rows
-def save_to_csv(rows: List[InvoiceRow], out_path: str):
+def save_to_csv(rows: List[InvoiceRow], out_path: str, schema_name: str):
+    export_columns = EXPORT_SCHEMAS[schema_name]
     with open(out_path, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=EXPORT_COLUMNS)
+        writer = csv.DictWriter(f, fieldnames=export_columns)
         writer.writeheader()
         for row in rows:
-            writer.writerow(row.to_export_dict())
+            writer.writerow(row.to_export_dict(schema_name))
 def beautify_excel(path: str):
     if load_workbook is None:
         return
@@ -930,10 +971,11 @@ def beautify_excel(path: str):
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
     wb.save(path)
-def save_to_xlsx(rows: List[InvoiceRow], out_path: str):
+def save_to_xlsx(rows: List[InvoiceRow], out_path: str, schema_name: str):
     if pd is None:
         raise RuntimeError("缺少依赖: pandas/openpyxl，请先安装 (pip install pandas openpyxl)")
-    df = pd.DataFrame([r.to_export_dict() for r in rows], columns=EXPORT_COLUMNS)
+    export_columns = EXPORT_SCHEMAS[schema_name]
+    df = pd.DataFrame([r.to_export_dict(schema_name) for r in rows], columns=export_columns)
     df.to_excel(out_path, index=False)
     beautify_excel(out_path)
 class InvoiceApp:
@@ -944,6 +986,7 @@ class InvoiceApp:
         self.pdf_files: List[str] = []
         self.mode_var = tk.StringVar(value="merge")
         self.format_var = tk.StringVar(value="xlsx")
+        self.schema_var = tk.StringVar(value="顺序1")
         self._build_ui()
     def _build_ui(self):
         main = ttk.Frame(self.root, padding=12)
@@ -972,6 +1015,9 @@ class InvoiceApp:
         ttk.Label(options, text="输出格式:").grid(row=1, column=0, sticky="w", pady=(8, 0))
         ttk.Radiobutton(options, text="XLSX（推荐，美观）", variable=self.format_var, value="xlsx").grid(row=1, column=1, sticky="w", pady=(8, 0))
         ttk.Radiobutton(options, text="CSV（UTF-8带BOM）", variable=self.format_var, value="csv").grid(row=1, column=2, sticky="w", pady=(8, 0), padx=15)
+        ttk.Label(options, text="导出列顺序:").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Radiobutton(options, text="顺序1", variable=self.schema_var, value="顺序1").grid(row=2, column=1, sticky="w", pady=(8, 0))
+        ttk.Radiobutton(options, text="顺序2", variable=self.schema_var, value="顺序2").grid(row=2, column=2, sticky="w", pady=(8, 0), padx=15)
         progress_wrap = ttk.LabelFrame(main, text="3) 处理进度", padding=10)
         progress_wrap.pack(fill="x", pady=8)
         self.progress = ttk.Progressbar(progress_wrap, orient="horizontal", length=400, mode="determinate")
@@ -1057,18 +1103,18 @@ class InvoiceApp:
                     ext = self.format_var.get()
                     out_path = os.path.join(out_dir, f"{base}_整理.{ext}")
                     if ext == "csv":
-                        save_to_csv(rows, out_path)
+                        save_to_csv(rows, out_path, self.schema_var.get())
                     else:
-                        save_to_xlsx(rows, out_path)
+                        save_to_xlsx(rows, out_path, self.schema_var.get())
                 self.progress.configure(value=idx)
             if self.mode_var.get() == "merge":
                 stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 ext = self.format_var.get()
                 out_path = os.path.join(out_dir, f"发票汇总_{stamp}.{ext}")
                 if ext == "csv":
-                    save_to_csv(all_rows, out_path)
+                    save_to_csv(all_rows, out_path, self.schema_var.get())
                 else:
-                    save_to_xlsx(all_rows, out_path)
+                    save_to_xlsx(all_rows, out_path, self.schema_var.get())
             self.status_var.set("处理完成")
             messagebox.showinfo("完成", f"导出完成，共处理 {total} 个PDF。")
             if self.mode_var.get() == "merge":
