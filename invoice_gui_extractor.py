@@ -230,7 +230,31 @@ class InvoiceRow:
     tax_rate: str = ""
     tax_amount: str = ""
     total: str = ""
+
+    @staticmethod
+    def _name_only_for_order2(name: str) -> str:
+        """顺序2 仅保留单位名称，不带统一社会信用代码/纳税人识别号。"""
+        raw = (name or "").strip()
+        if not raw:
+            return ""
+
+        tax_id_pattern = r"[0-9A-Z]{15,20}"
+        lines = [ln.strip() for ln in re.split(r"[\r\n]+", raw) if ln.strip()]
+        filtered_lines = [ln for ln in lines if not re.fullmatch(tax_id_pattern, ln)]
+        merged = "".join(filtered_lines) if filtered_lines else raw
+
+        merged = re.sub(
+            rf"(?:统一社会信用代码/?纳税人识别号|纳税人识别号)[:：]?\s*{tax_id_pattern}",
+            "",
+            merged,
+        )
+        merged = re.sub(r"^名称[:：]?", "", merged).strip()
+        merged = re.sub(rf"{tax_id_pattern}$", "", merged).strip()
+        return re.sub(r"\s+", "", merged)
+
     def to_export_dict(self, schema_name: str = "顺序1") -> Dict[str, str]:
+        buyer_name_order2 = self._name_only_for_order2(self.buyer_name)
+        seller_name_order2 = self._name_only_for_order2(self.seller_name)
         schema_data = {
             "顺序1": {
                 "空": "",
@@ -248,8 +272,8 @@ class InvoiceRow:
             },
             "顺序2": {
                 "空": "",
-                "购方单位名称(购买方单位名称)": self.buyer_name,
-                "公司名称(销售方单位名称)": self.seller_name,
+                "购方单位名称(购买方单位名称)": buyer_name_order2,
+                "公司名称(销售方单位名称)": seller_name_order2,
                 "发票编码": self.invoice_number,
                 "开票日期": self.invoice_date,
                 "到票日期(空)": "",
