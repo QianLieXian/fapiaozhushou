@@ -340,6 +340,110 @@ def valid_page_words(page) -> List[Dict[str, Any]]:
         if 0 <= top <= page.height and 0 <= bottom <= page.height and -1 <= x0 <= page.width + 1 and -1 <= x1 <= page.width + 1:
             filtered.append(w)
     return filtered
+
+
+def words_in_bbox(words: List[Dict[str, Any]], bbox: Tuple[float, float, float, float]) -> List[Dict[str, Any]]:
+    x0, top, x1, bottom = bbox
+    out: List[Dict[str, Any]] = []
+    for w in words:
+        wx0 = float(w.get("x0", 0))
+        wx1 = float(w.get("x1", 0))
+        wtop = float(w.get("top", 0))
+        wbottom = float(w.get("bottom", 0))
+        if wx1 >= x0 and wx0 <= x1 and wbottom >= top and wtop <= bottom:
+            out.append(w)
+    return out
+
+
+def cluster_words_by_row(words: List[Dict[str, Any]], y_tol: float = 2.0) -> List[List[Dict[str, Any]]]:
+    rows: List[List[Dict[str, Any]]] = []
+    row_tops: List[float] = []
+    ordered = sorted(words, key=lambda w: (round(float(w.get("top", 0)), 1), float(w.get("x0", 0))))
+    for w in ordered:
+        top = float(w.get("top", 0))
+        placed = False
+        for idx, row_top in enumerate(row_tops):
+            if abs(top - row_top) <= y_tol:
+                rows[idx].append(w)
+                row_tops[idx] = (row_top + top) / 2
+                placed = True
+                break
+        if not placed:
+            rows.append([w])
+            row_tops.append(top)
+    for row in rows:
+        row.sort(key=lambda w: float(w.get("x0", 0)))
+    return rows
+
+
+def extract_party_from_bbox(page, bbox: Tuple[float, float, float, float]) -> Dict[str, str]:
+    all_words = valid_page_words(page)
+    region_words = words_in_bbox(all_words, bbox)
+    # 过滤竖排标签：通常高度远大于宽度，容易粘在名称后面。
+    horizontal_words: List[Dict[str, Any]] = []
+    for w in region_words:
+        wx0 = float(w.get("x0", 0))
+        wx1 = float(w.get("x1", 0))
+        wtop = float(w.get("top", 0))
+        wbottom = float(w.get("bottom", 0))
+        width = max(wx1 - wx0, 0.1)
+        height = max(wbottom - wtop, 0.1)
+        if height / width > 2.2:
+            continue
+        horizontal_words.append(w)
+
+    rows = cluster_words_by_row(horizontal_words)
+    name = ""
+    tax_no = ""
+    for row in rows:
+        row_text = "".join((w.get("text") or "") for w in row)
+        row_compact = compact_label(row_text)
+        if not tax_no:
+            tax_no = first_match(r"(?:统一社会信用代码/?纳税人识别号|纳税人识别号)[:：]?([0-9A-Z]{15,20})", row_compact)
+        if not name and "名称" in row_compact:
+            label_end = 0.0
+            for w in row:
+                txt = compact_label(w.get("text") or "")
+                if "名称" in txt:
+                    label_end = max(label_end, float(w.get("x1", 0)))
+            content_words = [
+                w for w in row if float(w.get("x0", 0)) >= label_end - 0.5
+            ]
+            if content_words:
+                content_words.sort(key=lambda w: float(w.get("x0", 0)))
+                selected = [content_words[0]]
+                prev = content_words[0]
+                for cur in content_words[1:]:
+                    gap = float(cur.get("x0", 0)) - float(prev.get("x1", 0))
+                    prev_width = max(float(prev.get("x1", 0)) - float(prev.get("x0", 0)), 1.0)
+                    if gap > max(8.0, prev_width * 1.2):
+                        break
+                    selected.append(cur)
+                    prev = cur
+                candidate = "".join((w.get("text") or "") for w in selected).lstrip(":：").strip()
+                if candidate:
+                    name = candidate
+
+    compact_region = compact_label("".join((w.get("text") or "") for w in horizontal_words))
+    if not name:
+        name = first_match(r"名称[:：]?(.+?)(?:统一社会信用代码|纳税人识别号|$)", compact_region)
+    if not tax_no:
+        tax_no = first_match(r"(?:统一社会信用代码/?纳税人识别号|纳税人识别号)[:：]?([0-9A-Z]{15,20})", compact_region)
+    return {"name": name, "tax_no": tax_no}
+
+def clean_party_name(name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        return ""
+    name = re.sub(r"^名称[:：]?", "", name).strip()
+    name = re.split(
+        r"(?:统一社会信用代码/?纳税人识别号|纳税人识别号|地址|开户地址|开户行|电话|账号|价税合计)",
+        name,
+        maxsplit=1,
+    )[0].strip()
+    return re.sub(r"\s+", "", name)
+
+
 def extract_label_value(block_text: str, labels: List[str]) -> str:
     compact = compact_label(block_text)
     for label in labels:
@@ -419,10 +523,12 @@ def extract_structured_invoice(pdf_path: str) -> Optional[Dict[str, Any]]:
             meta_date_text = crop_text(page, regions["meta_date"])
             invoice_number = first_match(r"发票号码[:：]?\s*([0-9A-Za-z]+)", meta_number_text)
             invoice_date = first_match(r"开票日期[:：]?\s*([0-9]{4}[-/年][0-9]{1,2}[-/月][0-9]{1,2}日?)", meta_date_text)
-            buyer_name = first_match(r"名称[:：]?(.+?)(?:统一社会信用代码|纳税人识别号|$)", compact_label(buyer_text))
-            seller_name = first_match(r"名称[:：]?(.+?)(?:统一社会信用代码|纳税人识别号|$)", compact_label(seller_text))
-            buyer_tax_no = first_match(r"(?:统一社会信用代码/?纳税人识别号|纳税人识别号)[:：]?([0-9A-Z]{15,20})", compact_label(buyer_text))
-            seller_tax_no = first_match(r"(?:统一社会信用代码/?纳税人识别号|纳税人识别号)[:：]?([0-9A-Z]{15,20})", compact_label(seller_text))
+            buyer_party = extract_party_from_bbox(page, regions["buyer"])
+            seller_party = extract_party_from_bbox(page, regions["seller"])
+            buyer_name = clean_party_name(buyer_party.get("name", ""))
+            seller_name = clean_party_name(seller_party.get("name", ""))
+            buyer_tax_no = buyer_party.get("tax_no", "")
+            seller_tax_no = seller_party.get("tax_no", "")
             money_vals = re.findall(r"([0-9]+\.[0-9]+)", f"{items_band_text}\n{grand_total_text}")
             total = money_vals[-1] if money_vals else ""
             items = extract_items_by_layout(page, spec)
@@ -540,26 +646,6 @@ def split_name_model_unit(item_name: str, model: str, unit: str) -> Dict[str, st
     return {"item_name": item_name, "model": model, "unit": unit}
 def extract_header_fields(text: str) -> Dict[str, str]:
     compact = compact_label(text)
-    def clean_party_name(name: str) -> str:
-        name = (name or "").strip()
-        if not name:
-            return ""
-        name = re.sub(r"^名称[:：]?", "", name).strip()
-        # 清除误识别到名称末尾的“购买方信息/销售方信息/买售方方信”等标签
-        name = re.sub(
-            r"[（(]\s*(?:购买方信息|销售方信息|买方信息|卖方信息|买售方方信)\s*$",
-            "",
-            name,
-        ).strip()
-        # 防止“销 名称:xxx”或“销售方名称:xxx”等串到同一字段
-        name = re.split(r"(?:销\s*名称|销售方\s*名称)\s*[:：]", name, maxsplit=1)[0].strip()
-        # 防止税号、地址等内容误拼到名称里
-        name = re.split(
-            r"(?:统一社会信用代码/?纳税人识别号|纳税人识别号|地址|开户行|电话|账号|购买方信息|销售方信息|买方信息|卖方信息|买售方方信|价税合计)",
-            name,
-            maxsplit=1,
-        )[0].strip()
-        return name
     def extract_party_fields(raw_text: str, party: str) -> Dict[str, str]:
         # 兼容“购买方信息/购 买 方 信 息/竖排换行”等布局
         party_map = {
